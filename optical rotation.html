@@ -1,0 +1,233 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>旋光シミュレーター</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&display=swap">
+<style>
+/* Layout: 上に「実像と鏡像の分子」、下に4本の試料管を縦に並べて同時に比べる。文字は最小限、見て分かることを優先 */
+:root{
+  --bg:#ffffff; --fg:#16181d; --muted:#6a707c; --line:#d9dce3; --panel:#f4f5f8;
+  --real:#1d63d6; --mirror:#e0661a; --tube:rgba(140,175,220,.16); --tube-edge:#b9c3d2;
+  --font:"BIZ UDPGothic","Hiragino Kaku Gothic ProN","Yu Gothic","Meiryo",sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#121418; --fg:#eceef2; --muted:#9aa1ad; --line:#2e333c; --panel:#1b1e24;
+  --real:#6ea6ff; --mirror:#ff9b55; --tube:rgba(140,175,220,.10); --tube-edge:#3d4654; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#121418; --fg:#eceef2; --muted:#9aa1ad; --line:#2e333c; --panel:#1b1e24;
+  --real:#6ea6ff; --mirror:#ff9b55; --tube:rgba(140,175,220,.10); --tube-edge:#3d4654; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--font)}
+.wrap{max-width:900px;margin:0 auto;padding-block:16px 32px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:14px}
+h1{font-size:1.4rem;margin:0}
+canvas{display:block;width:100%}
+#pair{height:170px}
+.lane{height:160px;border-top:1px solid var(--line)}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg);padding-block:8px;z-index:2}
+button{font:inherit;font-size:1rem;padding:8px 16px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg);cursor:pointer;min-height:42px}
+button:focus-visible{outline:2px solid var(--real);outline-offset:2px}
+button[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
+.seg{display:flex}
+.seg button{border-radius:0}
+.seg button:first-child{border-radius:6px 0 0 6px}
+.seg button:last-child{border-radius:0 6px 6px 0;border-left:none}
+.legend{display:flex;align-items:center;gap:6px;font-size:.95rem}
+.legend i{display:inline-block;width:6px;height:26px;border-radius:3px;background:#f5c518;border:1px solid #a87a00}
+.count{display:flex;align-items:center;gap:6px;font-size:1rem}
+.count b{min-width:2ch;text-align:center;font-variant-numeric:tabular-nums}
+</style>
+
+<div class="wrap">
+  <h1>旋光　光の向きが回る</h1>
+  <canvas id="pair" aria-label="乳酸の実像と鏡像の分子模型"></canvas>
+  <div class="bar">
+    <span class="seg" role="group" aria-label="表示のしかた"><button id="mArrow" aria-pressed="true">矢印で見る</button><button id="mWave" aria-pressed="false">波で見る</button></span>
+    <button id="again">▶ もう一度</button>
+    <button id="slow" aria-pressed="false">ゆっくり</button>
+    <span class="legend"><i></i>＝光がふるえる向き</span>
+    <span class="count">分子の数 <button id="minus" aria-label="分子を減らす">−</button><b id="n">6</b><button id="plus" aria-label="分子を増やす">＋</button></span>
+  </div>
+  <canvas class="lane" id="L0" aria-label="実像の分子だけの試料管"></canvas>
+  <canvas class="lane" id="L1" aria-label="鏡像の分子だけの試料管"></canvas>
+  <canvas class="lane" id="L2" aria-label="実像と鏡像が半分ずつのラセミ体"></canvas>
+  <canvas class="lane" id="L3" aria-label="メソ体"></canvas>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const DEG=Math.PI/180, STEP=15*DEG;
+let N=6, slow=false, t0=performance.now(), mode="arrow", TNOW=0;
+
+function fit(cv){const r=cv.getBoundingClientRect(),d=devicePixelRatio||1;const w=Math.round(r.width*d),h=Math.round(r.height*d);
+  if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}const g=cv.getContext("2d");g.setTransform(d,0,0,d,0,0);return [g,r.width,r.height];}
+
+/* ---------- 乳酸の分子模型（ボール＆スティック） ---------- */
+function ball(g,x,y,r,col){const gr=g.createRadialGradient(x-r*.35,y-r*.35,r*.15,x,y,r);gr.addColorStop(0,"#fff");gr.addColorStop(.35,col);gr.addColorStop(1,shade(col));g.fillStyle=gr;g.beginPath();g.arc(x,y,r,0,7);g.fill();}
+function shade(c){const n=parseInt(c.slice(1),16);const f=v=>Math.round(v*.55);return `rgb(${f(n>>16)},${f(n>>8&255)},${f(n&255)})`;}
+function molecule(g,x,y,s,mirror,tint,opts={}){
+  const m=mirror?-1:1, P=(a,b)=>[x+a*m*s,y+b*s];
+  const A={COOH:P(0,-17),H:P(-16,4),OH:P(16,3),CH3:P(3,15)}, C=P(0,0);
+  if(tint){g.fillStyle=tint;g.globalAlpha=opts.glow?.38:.14;g.beginPath();g.arc(x,y+s,26*s,0,7);g.fill();g.globalAlpha=1;
+    g.strokeStyle=tint;g.lineWidth=opts.glow?3:1.5;g.beginPath();g.arc(x,y+s,26*s,0,7);g.stroke();}
+  g.lineCap="round";g.strokeStyle="#8a8f99";
+  g.lineWidth=2.2*s;g.setLineDash([2.5*s,2.5*s]);g.beginPath();g.moveTo(...C);g.lineTo(...A.OH);g.stroke();g.setLineDash([]);
+  ball(g,...A.OH,5.6*s,"#e2483d");
+  g.lineWidth=2.6*s;[A.COOH,A.H].forEach(p=>{g.beginPath();g.moveTo(...C);g.lineTo(...p);g.stroke();});
+  ball(g,...C,5.2*s,"#3a3d44");ball(g,...A.COOH,6.4*s,"#5b6070");ball(g,...A.H,4*s,"#e9ecf1");
+  g.lineWidth=4*s;g.beginPath();g.moveTo(...C);g.lineTo(...A.CH3);g.stroke();
+  ball(g,...A.CH3,7.2*s,"#8f96a3");
+  if(opts.labels){g.font=`bold ${Math.round(4.2*s)}px ${css("--font")}`;g.textAlign="center";g.textBaseline="middle";g.fillStyle="#fff";
+    [["COOH",A.COOH],["OH",A.OH],["CH₃",A.CH3]].forEach(([t,p])=>g.fillText(t,...p));g.fillStyle="#333";g.fillText("H",...A.H);}
+}
+
+function drawPair(){
+  const [g,W,H]=fit($("pair"));g.clearRect(0,0,W,H);
+  const s=Math.min(2.4,W/300), cy=H*.44;
+  molecule(g,W*.27,cy,s,false,css("--real"),{labels:true});
+  molecule(g,W*.73,cy,s,true,css("--mirror"),{labels:true});
+  g.fillStyle=css("--line");g.fillRect(W/2-3,10,6,H-50);
+  g.fillStyle=css("--muted");g.font=`13px ${css("--font")}`;g.textAlign="center";g.fillText("鏡",W/2,H-28);
+  g.font=`bold 16px ${css("--font")}`;
+  g.fillStyle=css("--real");g.fillText("実像",W*.27,H-14);
+  g.fillStyle=css("--mirror");g.fillText("鏡像",W*.73,H-14);
+}
+
+/* ---------- 試料管 ---------- */
+const LANES=[
+  {id:"L0",title:"実像だけ",kind:"real"},
+  {id:"L1",title:"鏡像だけ",kind:"mirror"},
+  {id:"L2",title:"半分ずつ（ラセミ体）",kind:"racemic"},
+  {id:"L3",title:"メソ体",kind:"meso"}
+];
+function events(kind,xs,pitch){ // 光の向きが回る場所と量
+  const ev=[];
+  xs.forEach((x,i)=>{
+    if(kind==="real")ev.push([x,STEP]);
+    else if(kind==="mirror")ev.push([x,-STEP]);
+    else if(kind==="racemic")ev.push([x,i%2?-STEP:STEP]);
+    else {ev.push([x-pitch*.18,STEP]);ev.push([x+pitch*.18,-STEP]);}
+  });return ev;
+}
+const smooth=u=>u<=0?0:u>=1?1:u*u*(3-2*u);
+function phiAt(x,ev,span){let p=0;for(const [ex,d] of ev)p+=d*smooth((x-ex)/span+.5);return p;}
+
+function mesoGlyph(g,x,y,s,glow){
+  const sp=8.5*s;
+  g.strokeStyle="#8a8f99";g.lineWidth=2.6*s*.7;g.beginPath();g.moveTo(x-sp,y);g.lineTo(x+sp,y);g.stroke();
+  molecule(g,x-sp,y,s*.62,false,css("--real"),{glow});
+  molecule(g,x+sp,y,s*.62,true,css("--mirror"),{glow});
+  g.strokeStyle=css("--fg");g.lineWidth=1;g.setLineDash([3,3]);g.beginPath();g.moveTo(x,y-20*s);g.lineTo(x,y+20*s);g.stroke();g.setLineDash([]);
+}
+
+function arrow2(g,x1,y1,x2,y2){
+  const a=Math.atan2(y2-y1,x2-x1),h=6;
+  const head=(x,y,ang)=>{g.beginPath();g.moveTo(x,y);g.lineTo(x-h*Math.cos(ang-.5),y-h*Math.sin(ang-.5));g.lineTo(x-h*Math.cos(ang+.5),y-h*Math.sin(ang+.5));g.closePath();g.fill();g.stroke();};
+  g.lineCap="round";g.strokeStyle="#a87a00";g.lineWidth=5;g.beginPath();g.moveTo(x1,y1);g.lineTo(x2,y2);g.stroke();
+  g.strokeStyle="#f5c518";g.lineWidth=3;g.beginPath();g.moveTo(x1,y1);g.lineTo(x2,y2);g.stroke();
+  g.fillStyle="#f5c518";g.strokeStyle="#a87a00";g.lineWidth=1.2;head(x2,y2,a);head(x1,y1,a+Math.PI);
+}
+function windowView(g,cx,cy,r,phi,label,col,final){
+  g.fillStyle=css("--panel");g.strokeStyle=css("--tube-edge");g.lineWidth=1.5;g.beginPath();g.arc(cx,cy,r,0,7);g.fill();g.stroke();
+  g.strokeStyle=css("--muted");g.lineWidth=1.2;g.setLineDash([4,4]);g.beginPath();g.moveTo(cx,cy-r*.92);g.lineTo(cx,cy+r*.92);g.stroke();g.setLineDash([]);
+  if(Math.abs(phi)>.01){
+    const rr=r*.62,a0=-Math.PI/2,a1=a0+phi;g.strokeStyle=col;g.lineWidth=3;g.beginPath();g.arc(cx,cy,rr,a0,a1,phi<0);g.stroke();
+    const ex=cx+rr*Math.cos(a1),ey=cy+rr*Math.sin(a1),tn=a1+(phi>0?Math.PI/2:-Math.PI/2),h=8;
+    g.fillStyle=col;g.beginPath();g.moveTo(ex+h*Math.cos(tn),ey+h*Math.sin(tn));g.lineTo(ex+h*.7*Math.cos(tn+2.3),ey+h*.7*Math.sin(tn+2.3));g.lineTo(ex+h*.7*Math.cos(tn-2.3),ey+h*.7*Math.sin(tn-2.3));g.closePath();g.fill();
+  }
+  // 光の振動の向き（両矢印）
+  const dx=Math.sin(phi)*r*.86,dy=-Math.cos(phi)*r*.86;
+  g.strokeStyle="#c99400";g.lineWidth=5;g.lineCap="round";g.beginPath();g.moveTo(cx-dx,cy-dy);g.lineTo(cx+dx,cy+dy);g.stroke();
+  g.strokeStyle="#f5c518";g.lineWidth=3;g.beginPath();g.moveTo(cx-dx,cy-dy);g.lineTo(cx+dx,cy+dy);g.stroke();
+  if(label){g.fillStyle=final?col:css("--muted");g.font=`bold ${final?15:12}px ${css("--font")}`;g.textBaseline="top";const tw=g.measureText(label).width,W0=g.canvas.width/(devicePixelRatio||1);
+    g.textAlign="center";g.fillText(label,Math.max(tw/2+2,Math.min(W0-tw/2-2,cx)),cy+r+8);}
+}
+
+function drawLane(L,prog){
+  const [g,W,H]=fit($(L.id));g.clearRect(0,0,W,H);
+  const real=css("--real"),mir=css("--mirror"),fg=css("--fg"),mu=css("--muted");
+  const r=Math.min(30,W*.075), cy=H*.5, xin=r+4, xout=W-r-6, tx0=xin+r+10, tx1=xout-r-10;
+  const pitch=(tx1-tx0)/N, xs=[...Array(N)].map((_,i)=>tx0+(i+.5)*pitch);
+  const ev=events(L.kind,xs,pitch), span=pitch*(L.kind==="meso"?.3:.55);
+  const th=H*.66;
+  const front=xin+(xout-xin)*prog;
+
+  // 見出し
+  g.textAlign="left";g.textBaseline="top";g.font=`bold 15px ${css("--font")}`;
+  const col=L.kind==="real"?real:L.kind==="mirror"?mir:fg;g.fillStyle=col;g.fillText(L.title,4,8);
+
+  // 試料管
+  g.fillStyle=css("--tube");g.strokeStyle=css("--tube-edge");g.lineWidth=1.5;
+  g.beginPath();g.roundRect(tx0-6,cy-th/2,tx1-tx0+12,th,th/2);g.fill();g.stroke();
+
+  // 分子
+  const s=Math.max(.5,Math.min(.95,pitch/56));
+  xs.forEach((x,i)=>{
+    const glow=Math.abs(front-x)<pitch*.45&&prog<1;
+    if(L.kind==="meso")mesoGlyph(g,x,cy+th*.2,s,glow);
+    else{const isMir=L.kind==="mirror"||(L.kind==="racemic"&&i%2);molecule(g,x,cy+th*.2,s,isMir,isMir?mir:real,{glow});}
+  });
+
+  // 光の通り道と、各地点での振動の向き（正面から見た向き）
+  const ay=cy-th*.2, AL=Math.min(pitch*.36,18);
+  g.strokeStyle="#f5c518";g.globalAlpha=.55;g.lineWidth=5;g.lineCap="round";
+  g.beginPath();g.moveTo(xin+r,ay);g.lineTo(Math.min(front,xout-r),ay);g.stroke();g.globalAlpha=1;
+  if(mode==="arrow"){
+  const pts=[...Array(N+1)].map((_,k)=>tx0+k*pitch);
+  if(L.kind==="meso")xs.forEach(x=>pts.push(x));
+  pts.forEach(x=>{ if(front<x)return;
+    const p=phiAt(x,ev,span),dx=Math.sin(p)*AL,dy=-Math.cos(p)*AL;
+    arrow2(g,x-dx,ay-dy,x+dx,ay+dy);
+  });
+  } else {
+    // 偏光の波（斜めから見た横波）。振動面が分子のところで少しずつ回る
+    const kx=.5,ky=.34,amp=Math.min(th*.22,18),lam=Math.max(30,pitch*.95),end=Math.min(front,xout-r*.2);
+    const Pt=(x)=>{const p=phiAt(x,ev,span),u=amp*Math.sin(2*Math.PI*x/lam-TNOW*5),y=u*Math.cos(p),z=-u*Math.sin(p);return [x+z*kx,ay-y-z*ky];};
+    // 振動面の目印（薄い塗り）
+    g.fillStyle="#f5c518";g.globalAlpha=.28;
+    for(let x=xin;x<end-1.5;x+=1.5){const a=Pt(x),b=Pt(x+1.5);g.beginPath();g.moveTo(x,ay);g.lineTo(...a);g.lineTo(...b);g.lineTo(x+1.5,ay);g.closePath();g.fill();}
+    g.globalAlpha=1;
+    // 振動の棒（ところどころ）
+    g.strokeStyle="#d9a300";g.lineWidth=1;
+    for(let x=xin+3;x<end;x+=lam/8){const a=Pt(x);g.beginPath();g.moveTo(x,ay);g.lineTo(...a);g.stroke();}
+    // 波の線
+    g.strokeStyle="#a87a00";g.lineWidth=3.2;g.beginPath();for(let x=xin;x<=end;x+=1){const p=Pt(x);x===xin?g.moveTo(...p):g.lineTo(...p);}g.stroke();
+    g.strokeStyle="#f5c518";g.lineWidth=1.8;g.beginPath();for(let x=xin;x<=end;x+=1){const p=Pt(x);x===xin?g.moveTo(...p):g.lineTo(...p);}g.stroke();
+    // 光軸
+    g.strokeStyle=mu;g.lineWidth=1;g.setLineDash([3,3]);g.beginPath();g.moveTo(xin,ay);g.lineTo(end,ay);g.stroke();g.setLineDash([]);
+  }
+  if(prog<1&&front>xin+r&&front<xout-r){g.fillStyle="#fff3a6";g.strokeStyle="#d9a300";g.lineWidth=1.5;g.beginPath();g.arc(front,ay,6,0,7);g.fill();g.stroke();}
+
+  // 入口と出口の窓（正面から見た光の向き）
+  windowView(g,xin,cy,r,0,mode==="wave"?"偏光板":"入る光",mu,false);
+  if(mode==="wave"){g.save();g.beginPath();g.arc(xin,cy,r-1,0,7);g.clip();g.strokeStyle=mu;g.globalAlpha=.45;g.lineWidth=1;
+    for(let k=-r;k<=r;k+=5){if(Math.abs(k)<4)continue;g.beginPath();g.moveTo(xin+k,cy-r);g.lineTo(xin+k,cy+r);g.stroke();}g.restore();g.globalAlpha=1;}
+  const pf=phiAt(Math.min(front,xout),ev,span), done=prog>=1;
+  const lab=!done?"出る光":Math.abs(pf)<.01?"回らない":pf>0?"↻ 右に回る":"↺ 左に回る";
+  const lc=Math.abs(pf)<.01?fg:pf>0?real:mir;
+  windowView(g,xout,cy,r,pf,lab,lc,done);
+}
+
+function frame(now){
+  TNOW=reduce?0:now/1000;
+  const dur=slow?9000:4500, hold=2200;
+  let prog=reduce?1:Math.min(1,((now-t0)%(dur+hold))/dur);
+  LANES.forEach(L=>drawLane(L,prog));
+  if(!reduce)requestAnimationFrame(frame);
+}
+function redraw(){drawPair();if(reduce)frame(performance.now());}
+
+const setMode=m=>{mode=m;$("mArrow").setAttribute("aria-pressed",m==="arrow");$("mWave").setAttribute("aria-pressed",m==="wave");t0=performance.now();if(reduce)frame(t0);};
+$("mArrow").onclick=()=>setMode("arrow");$("mWave").onclick=()=>setMode("wave");
+$("again").onclick=()=>{t0=performance.now();};
+$("slow").onclick=e=>{slow=!slow;e.currentTarget.setAttribute("aria-pressed",slow);t0=performance.now();};
+const setN=v=>{N=Math.max(2,Math.min(10,v));$("n").textContent=N;t0=performance.now();if(reduce)frame(t0);};
+$("minus").onclick=()=>setN(N-2);$("plus").onclick=()=>setN(N+2);
+addEventListener("resize",redraw);
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change",redraw);
+new MutationObserver(redraw).observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+document.fonts?.ready.then(redraw);
+redraw();if(!reduce)requestAnimationFrame(frame);
+</script>
+
+</body></html>
